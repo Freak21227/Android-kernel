@@ -84,7 +84,7 @@ jobs:
           cd "$WORK/kernel"
           make kernelversion
 
-      - - name: Clone Alchemist-LLVM clang-22-LTO
+      - name: Clone Alchemist-LLVM clang-22-LTO
         run: |
           mkdir -p "$WORK/toolchain"
           cd "$WORK/toolchain"
@@ -165,7 +165,7 @@ jobs:
           mkdir -p "$WORK/boot"
           cd "$WORK/boot"
           if [ "${{ inputs.boot_img_source }}" = "repo" ]; then
-            cp "\( GITHUB_WORKSPACE/ \){{ inputs.boot_img_path }}" source_download
+            cp "$GITHUB_WORKSPACE/${{ inputs.boot_img_path }}" source_download
           else
             curl -L -o source_download "${{ inputs.boot_img_url }}"
           fi
@@ -205,3 +205,4 @@ jobs:
             "$WORK/boot/Image-raw" \
             --title "Custom Kernel Marble (Mondrian config + Alchemist LLVM-22 LTO) - $TAG" \
             --notes "Built with LineageOS kernel + Alchemist clang-22-LTO. Pure GKI repack."
+            

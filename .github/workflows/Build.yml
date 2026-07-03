@@ -1,0 +1,204 @@
+name: Build Custom Kernel Marble (LineageOS + Alchemist LLVM)
+
+on:
+  workflow_dispatch:
+    inputs:
+      boot_img_source:
+        description: "Sumber boot.img/stock boot.zip"
+        required: false
+        default: "url"
+        type: choice
+        options:
+          - url
+          - repo
+      boot_img_url:
+        description: "URL to boot.img or boot.zip (stock ROM'dan)"
+        required: false
+        default: "https://github.com/zenxvolt/custom-kernel-marble/releases/download/yes/boot.img"
+        type: string
+      boot_img_path:
+        description: "Repo içindeki boot.zip/boot.img yolu (repo seçeneği için)"
+        required: false
+        default: "boot.zip"
+        type: string
+      kernel_branch:
+        description: "Kernel branch"
+        required: false
+        default: "lineage-23.2"
+        type: string
+      create_release:
+        description: "GitHub Release oluştur"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  WORK: /home/runner/kernel-build
+
+jobs:
+  build-kernel:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Validasi input
+        run: |
+          if [ "${{ inputs.boot_img_source }}" = "repo" ]; then
+            if [ ! -f "${{ inputs.boot_img_path }}" ]; then
+              echo "::error::File '${{ inputs.boot_img_path }}' bulunamadı!"
+              exit 1
+            fi
+          else
+            if [ -z "${{ inputs.boot_img_url }}" ]; then
+              echo "::error::boot_img_url doldurulmalı!"
+              exit 1
+            fi
+          fi
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          large-packages: true
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git bc bison flex libssl-dev make libc6-dev libncurses-dev \
+            device-tree-compiler lz4 xz-utils zlib1g-dev python3 python-is-python3 \
+            p7zip-full android-sdk-libsparse-utils erofs-utils zip curl \
+            libelf-dev pahole libarchive-tools zstd rsync
+
+      - name: Clone kernel source (LineageOS)
+        run: |
+          mkdir -p "$WORK"
+          git clone https://github.com/LineageOS/android_kernel_xiaomi_sm8450.git \
+            --branch "${{ inputs.kernel_branch }}" --depth=1 "$WORK/kernel"
+          cd "$WORK/kernel"
+          make kernelversion
+
+      - name: Download Alchemist-LLVM clang-22-LTO
+        run: |
+          mkdir -p "$WORK/toolchain/clang"
+          cd "$WORK/toolchain/clang"
+          # Alchemist LLVM clang-22-LTO prebuilt (GitLab artifacts veya mirror)
+          curl -L -o clang.tar.zst "https://gitlab.com/nekoshirro/Alchemist-LLVM/-/archive/clang-22-LTO/Alchemist-LLVM-clang-22-LTO.tar.gz" || \
+          echo "Manual mirror kullan (aşağıdaki linki güncelle)" && exit 1
+          tar --use-compress-program=zstd -xf clang.tar.zst --strip-components=1
+          rm clang.tar.zst
+          echo "$WORK/toolchain/clang/bin" >> "$GITHUB_PATH"
+
+      - name: Export toolchain environment
+        run: |
+          cat >> "$GITHUB_ENV" << EOF
+          ARCH=arm64
+          SUBARCH=arm64
+          CC=clang
+          CLANG_TRIPLE=aarch64-linux-gnu-
+          CROSS_COMPILE=aarch64-linux-android-
+          CROSS_COMPILE_ARM32=arm-linux-androideabi-
+          LD=ld.lld
+          NM=llvm-nm
+          OBJCOPY=llvm-objcopy
+          OBJDUMP=llvm-objdump
+          STRIP=llvm-strip
+          AR=llvm-ar
+          LLVM=1
+          LLVM_IAS=1
+          EOF
+
+      - name: Verify Clang
+        run: clang --version && clang -v
+
+      - name: Generate .config (Mondrian_GKI)
+        run: |
+          cd "$WORK/kernel"
+          make -j$(nproc) O=out ARCH=arm64 \
+            gki_defconfig \
+            vendor/xiaomi_GKI.config \
+            vendor/mondrian_GKI.config \
+            vendor/debugfs.config
+
+          # Stack protector fix (LTO için)
+          sed -i 's/^CONFIG_STACKPROTECTOR.*/# CONFIG_STACKPROTECTOR is not set/' out/.config
+
+          make -j$(nproc) O=out ARCH=arm64 olddefconfig
+
+      - name: Add swap (LTO OOM prevention)
+        run: |
+          sudo swapoff -a
+          sudo fallocate -l 16G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
+      - name: Compile kernel
+        run: |
+          cd "$WORK/kernel"
+          make -j$(nproc) O=out ARCH=arm64 Image
+
+          ls -lh out/arch/arm64/boot/Image
+
+      - name: Setup magiskboot
+        run: |
+          cd "$WORK"
+          APK_URL=$(curl -s https://api.github.com/repos/topjohnwu/Magisk/releases/latest | grep -o '"browser_download_url": *"[^"]*\.apk"' | head -n1 | cut -d'"' -f4)
+          curl -L -o Magisk.apk "$APK_URL"
+          unzip -o Magisk.apk "lib/x86_64/libmagiskboot.so" -d .
+          mv lib/x86_64/libmagiskboot.so magiskboot
+          chmod +x magiskboot
+          sudo mv magiskboot /usr/local/bin/
+
+      - name: Get stock boot
+        run: |
+          mkdir -p "$WORK/boot"
+          cd "$WORK/boot"
+          if [ "${{ inputs.boot_img_source }}" = "repo" ]; then
+            cp "\( GITHUB_WORKSPACE/ \){{ inputs.boot_img_path }}" source_download
+          else
+            curl -L -o source_download "${{ inputs.boot_img_url }}"
+          fi
+
+          if unzip -l source_download > /dev/null 2>&1; then
+            unzip -o source_download boot.img
+          else
+            mv source_download boot.img
+          fi
+
+      - name: Repack boot.img
+        run: |
+          cd "$WORK/boot"
+          magiskboot unpack -h boot.img
+          cp "$WORK/kernel/out/arch/arm64/boot/Image" kernel
+          magiskboot repack boot.img
+          cp new-boot.img custom-kernel-marble-mondrian.img
+          cp "$WORK/kernel/out/arch/arm64/boot/Image" Image-raw
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: custom-kernel-marble-mondrian-${{ github.run_number }}
+          path: |
+            ${{ env.WORK }}/boot/custom-kernel-marble-mondrian.img
+            ${{ env.WORK }}/boot/Image-raw
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: ${{ inputs.create_release }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="marble-mondrian-$(date +'%Y%m%d-%H%M')"
+          gh release create "$TAG" \
+            "$WORK/boot/custom-kernel-marble-mondrian.img" \
+            "$WORK/boot/Image-raw" \
+            --title "Custom Kernel Marble (Mondrian config + Alchemist LLVM-22 LTO) - $TAG" \
+            --notes "Built with LineageOS kernel + Alchemist clang-22-LTO. Pure GKI repack."

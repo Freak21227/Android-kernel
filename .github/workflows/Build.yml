@@ -125,6 +125,7 @@ jobs:
           cd "$WORK/kernel"
           make -j$(nproc) O=out ARCH=arm64 \
             gki_defconfig \
+            vendor/waipio_GKI.config \
             vendor/xiaomi_GKI.config \
             vendor/mondrian_GKI.config \
             vendor/debugfs.config
@@ -150,15 +151,20 @@ jobs:
 
           ls -lh out/arch/arm64/boot/Image
 
-      - name: Setup magiskboot
+      - name: Siapkan magiskboot (v30.7)
         run: |
           cd "$WORK"
-          APK_URL=$(curl -s https://api.github.com/repos/topjohnwu/Magisk/releases/latest | grep -o '"browser_download_url": *"[^"]*\.apk"' | head -n1 | cut -d'"' -f4)
-          curl -L -o Magisk.apk "$APK_URL"
+          
+          # Sabit Magisk v30.7 APK
+          curl -L -o Magisk.apk "https://github.com/topjohnwu/Magisk/releases/download/v30.7/Magisk-v30.7.apk"
+          
           unzip -o Magisk.apk "lib/x86_64/libmagiskboot.so" -d .
           mv lib/x86_64/libmagiskboot.so magiskboot
           chmod +x magiskboot
           sudo mv magiskboot /usr/local/bin/
+          
+          echo "Magisk v30.7 boot tool installed"
+          magiskboot --help | head -n 5
 
       - name: Get stock boot
         run: |

@@ -84,19 +84,22 @@ jobs:
           cd "$WORK/kernel"
           make kernelversion
 
-      - name: Download Alchemist-LLVM clang-22-LTO
+      - - name: Clone Alchemist-LLVM clang-22-LTO
         run: |
-          mkdir -p "$WORK/toolchain/clang"
-          cd "$WORK/toolchain/clang"
-          # Alchemist LLVM clang-22-LTO prebuilt (GitLab artifacts veya mirror)
-          curl -L -o clang.tar.zst "https://gitlab.com/nekoshirro/Alchemist-LLVM/-/archive/clang-22-LTO/Alchemist-LLVM-clang-22-LTO.tar.gz" || \
-          echo "Manual mirror kullan (aşağıdaki linki güncelle)" && exit 1
-          tar --use-compress-program=zstd -xf clang.tar.zst --strip-components=1
-          rm clang.tar.zst
-          echo "$WORK/toolchain/clang/bin" >> "$GITHUB_PATH"
+          mkdir -p "$WORK/toolchain"
+          cd "$WORK/toolchain"
+          git clone --depth 1 --branch clang-22-LTO \
+            https://gitlab.com/nekoshirro/Alchemist-LLVM.git Alchemist-LLVM
+          ls -la Alchemist-LLVM/bin/ || echo "bin klasörü kontrol ediliyor..."
 
-      - name: Export toolchain environment
+      - name: Export toolchain PATH & Environment
         run: |
+          TOOLCHAIN_BIN="$WORK/toolchain/Alchemist-LLVM/bin"
+          echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
+          
+          echo "✅ Toolchain PATH: $TOOLCHAIN_BIN"
+          ls "$TOOLCHAIN_BIN/clang"* || echo "::warning::clang binary bulunamadı!"
+
           cat >> "$GITHUB_ENV" << EOF
           ARCH=arm64
           SUBARCH=arm64
